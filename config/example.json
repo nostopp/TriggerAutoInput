@@ -1,0 +1,58 @@
+{
+    "keyboard_f": {
+        "trigger_type": "once",
+        "actions": [
+            {
+                "type": "keyboard",
+                "action": "click",
+                "key": "1"
+            },
+            {
+                "type": "delay",
+                "duration": 0.1
+            },
+            {
+                "type": "keyboard",
+                "action": "click",
+                "key": "2"
+            }
+        ]
+    },
+    "keyboard_g": {
+        "trigger_type": "hold",
+        "actions": [
+            {
+                "type": "mouse",
+                "action": "click",
+                "key": "left"
+            },
+            {
+                "type": "delay",
+                "duration": 1
+            }
+        ]
+    },
+    "mouse_middle": {
+        "trigger_type": "toggle",
+        "actions": [
+            {
+                "type": "keyboard",
+                "action": "press",
+                "key": "space"
+            },
+            {
+                "type": "delay",
+                "duration": 0.5
+            },
+            {
+                "type": "keyboard",
+                "action": "release",
+                "key": "space"
+            },
+            {
+                "type": "delay",
+                "duration": 0.5
+            }
+        ]
+    }
+}
