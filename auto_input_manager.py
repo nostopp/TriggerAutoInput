@@ -8,9 +8,10 @@ from typing import Dict, List, Union, Optional
 import threading
 
 class AutoInputManager:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, open_log: bool):
         self.config_path = config_path
         self.config = self.load_config()
+        self.open_log = open_log
         self.keyboard_listener = None
         self.mouse_listener = None
         self.is_running = True
@@ -45,9 +46,9 @@ class AutoInputManager:
             if action.get('action') == 'click':
                 pydirectinput.click(button=key)
             elif action.get('action') == 'press':
-                pydirectinput.mouseDown(key)
+                pydirectinput.mouseDown(button=key)
             elif action.get('action') == 'release':
-                pydirectinput.mouseUp(key)
+                pydirectinput.mouseUp(button=key)
         elif action_type == 'delay':
             random = action.get('random', 0)
             time.sleep(action.get('duration', 0.1) + random * rand())
@@ -71,6 +72,8 @@ class AutoInputManager:
             def loop_actions():
                 self.execute_actions(actions)
             threading.Thread(target=loop_actions, daemon=True).start()
+            if self.open_log:
+                print(f'Trigger: {trigger_key}, Type: {trigger_type}')
         elif trigger_type == 'hold':
             # 按住时循环执行，松开时停止
             if is_press:
@@ -81,9 +84,13 @@ class AutoInputManager:
                         while self.active_loops.get(trigger_key, False):
                             self.execute_actions(actions)
                     threading.Thread(target=loop_actions, daemon=True).start()
+                    if self.open_log:
+                        print(f'Trigger: {trigger_key}, Type: {trigger_type}')
             elif trigger_key in self.active_loops:
                 # 松开时停止循环
                 self.active_loops.pop(trigger_key)
+                if self.open_log:
+                    print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
         elif trigger_type == 'toggle':
             if is_press:
                 if trigger_key not in self.active_loops:
@@ -93,9 +100,14 @@ class AutoInputManager:
                         while self.active_loops.get(trigger_key, False):
                             self.execute_actions(actions)
                     threading.Thread(target=loop_actions, daemon=True).start()
+                    if self.open_log:
+                        print(f'Trigger: {trigger_key}, Type: {trigger_type}')
+
                 elif trigger_key in self.active_loops:
                     # 停止循环
                     self.active_loops.pop(trigger_key)
+                    if self.open_log:
+                        print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
 
     def on_keyboard_press(self, key):
         """键盘事件按下处理"""
@@ -114,7 +126,8 @@ class AutoInputManager:
             return
 
         if key_name and key_name not in self.pressed_keys:
-            print(f'keyDown {key_name}')
+            if self.open_log:
+                print(f'keyDown {key_name}')
             self.pressed_keys.add(key_name)
             self.handle_trigger(f'keyboard_{key_name}', True)
 
@@ -128,7 +141,8 @@ class AutoInputManager:
 
         key_name = key.char if hasattr(key, 'char') else None
         if key_name:
-            print(f'keyUp {key_name}')
+            if self.open_log:
+                print(f'keyUp {key_name}')
             self.pressed_keys.discard(key_name)
             self.handle_trigger(f'keyboard_{key_name}', False)
 
@@ -136,7 +150,8 @@ class AutoInputManager:
         """鼠标点击事件处理"""
         button_name = button.name if hasattr(button, 'name') else None
         if button_name:
-            print(f'mouse_{button_name} {"down" if pressed else "up"}')
+            if self.open_log:
+                print(f'mouse_{button_name} {"down" if pressed else "up"}')
             self.handle_trigger(f'mouse_{button_name}', pressed)
 
     def start(self):

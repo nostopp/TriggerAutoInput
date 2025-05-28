@@ -10,13 +10,14 @@ def parse_args():
 ''')
     
     parser.add_argument('config',type=str,help='配置文件，必须是有效的 JSON 文件')
+    parser.add_argument('--log',default=False,help='开启日志',action="store_true")
     
     return parser.parse_args()
 
 def main():
     args = parse_args()
     config = f'config/{args.config}'
-    manager = AutoInputManager(config)
+    manager = AutoInputManager(config, args.log)
     manager.start()
 
 if __name__ == "__main__":
