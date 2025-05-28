@@ -1,0 +1,10 @@
+[project]
+name = "triggerautoinput"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydirectinput>=1.0.4",
+    "pynput>=1.8.1",
+]
