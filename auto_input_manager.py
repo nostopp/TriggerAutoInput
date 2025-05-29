@@ -14,16 +14,25 @@ class AutoInputManager:
         self.open_log = open_log
         self.keyboard_listener = None
         self.mouse_listener = None
-        self.is_running = True
-        self.active_loops = {}  # 存储正在运行的循环任务
-        self.pressed_keys = set()  # 追踪当前按下的键
-        # 追踪修饰键状态
-        self.ctrl_pressed = False
-        self.shift_pressed = False
-        # 事件响应状态
-        self.events_paused = False
+        
+        self._is_running = threading.Event()
+        self._events_paused = threading.Event()
+        
+        self._loops_lock = threading.Lock()  # 保护 active_loops
+        self._keys_lock = threading.Lock()   # 保护 pressed_keys
+        self.active_loops = {}
+        self.pressed_keys = set()
+
         self.active_threads = []  # 追踪所有活动的线程
         self.thread_lock = threading.Lock()  # 线程列表的同步锁
+
+    @property
+    def is_running(self):
+        return self._is_running.is_set()
+
+    @property
+    def events_paused(self):
+        return self._events_paused.is_set()
 
     def load_config(self) -> dict:
         """加载配置文件"""
@@ -67,6 +76,9 @@ class AutoInputManager:
         def wrapper():
             try:
                 func()
+            except Exception as e:
+                if self.open_log:
+                    print(f"线程执行出错: {e}")
             finally:
                 current_thread = threading.current_thread()
                 with self.thread_lock:
@@ -79,12 +91,15 @@ class AutoInputManager:
         if trigger_key not in self.config:
             return
 
+        if self.events_paused:
+            return
+
         trigger_config = self.config[trigger_key]
         trigger_type = trigger_config.get('trigger_type', 'press_once')
         actions = trigger_config.get('actions', [])
 
         if trigger_type == 'once' and is_press:
-            # 一次性触发
+            # 一次性触发不需要锁
             def loop_actions():
                 self.execute_actions(actions)
             thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
@@ -94,13 +109,20 @@ class AutoInputManager:
             if self.open_log:
                 print(f'Trigger: {trigger_key}, Type: {trigger_type}')
         elif trigger_type == 'hold':
-            # 按住时循环执行，松开时停止
             if is_press:
-                if trigger_key not in self.active_loops:
-                    # 启动循环
-                    self.active_loops[trigger_key] = True
+                should_start = False
+                with self._loops_lock:
+                    if trigger_key not in self.active_loops:
+                        self.active_loops[trigger_key] = True
+                        should_start = True
+                
+                if should_start:
                     def loop_actions():
-                        while self.active_loops.get(trigger_key, False):
+                        while self.is_running:
+                            # 检查循环状态时使用短暂的锁
+                            with self._loops_lock:
+                                if not self.active_loops.get(trigger_key, False):
+                                    break
                             self.execute_actions(actions)
                     thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
                     with self.thread_lock:
@@ -108,18 +130,29 @@ class AutoInputManager:
                     thread.start()
                     if self.open_log:
                         print(f'Trigger: {trigger_key}, Type: {trigger_type}')
-            elif trigger_key in self.active_loops:
-                # 松开时停止循环
-                self.active_loops.pop(trigger_key)
+            else:
+                with self._loops_lock:
+                    self.active_loops.pop(trigger_key, None)
                 if self.open_log:
                     print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
         elif trigger_type == 'toggle':
             if is_press:
-                if trigger_key not in self.active_loops:
-                    # 启动循环
-                    self.active_loops[trigger_key] = True
+                should_start = False
+                with self._loops_lock:
+                    if trigger_key not in self.active_loops:
+                        self.active_loops[trigger_key] = True
+                        should_start = True
+                    else:
+                        self.active_loops.pop(trigger_key)
+                        if self.open_log:
+                            print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
+                
+                if should_start:
                     def loop_actions():
-                        while self.active_loops.get(trigger_key, False):
+                        while self.is_running:
+                            with self._loops_lock:
+                                if not self.active_loops.get(trigger_key, False):
+                                    break
                             self.execute_actions(actions)
                     thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
                     with self.thread_lock:
@@ -127,60 +160,63 @@ class AutoInputManager:
                     thread.start()
                     if self.open_log:
                         print(f'Trigger: {trigger_key}, Type: {trigger_type}')
-
-                elif trigger_key in self.active_loops:
-                    # 停止循环
-                    self.active_loops.pop(trigger_key)
-                    if self.open_log:
-                        print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
 
     def on_keyboard_press(self, key):
         """键盘事件按下处理"""
         # 检查修饰键
         if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
-            self.ctrl_pressed = True
+            self._ctrl_pressed = True
         if key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
-            self.shift_pressed = True
+            self._shift_pressed = True
 
         key_name = key.char if hasattr(key, 'char') else None
         
         # 检查暂停/恢复快捷键
-        if key_name == 'x' or key_name == 'X' or key_name == '\x18' :
-            if self.ctrl_pressed and self.shift_pressed:
-                self.events_paused = not self.events_paused
-                if self.events_paused:
-                    self.active_loops.clear()  # 清理所有活动的循环
+        if key_name in ('x', 'X', '\x18'):
+            if self._ctrl_pressed and self._shift_pressed:
+                if self._events_paused.is_set():
+                    self._events_paused.clear()
+                else:
+                    self._events_paused.set()
+                    with self._loops_lock:
+                        self.active_loops.clear()
                 if self.open_log:
                     print(f'事件响应已{"暂停" if self.events_paused else "恢复"}')
                 return
 
-        # 如果事件已暂停，不处理其他按键
         if self.events_paused:
             return
 
-        if key_name and key_name not in self.pressed_keys:
-            if self.open_log:
-                print(f'keyDown {key_name}')
-            self.pressed_keys.add(key_name)
-            self.handle_trigger(f'keyboard_{key_name}', True)
+        if key_name:
+            should_trigger = False
+            with self._keys_lock:
+                if key_name not in self.pressed_keys:
+                    if self.open_log:
+                        print(f'keyDown {key_name}')
+                    self.pressed_keys.add(key_name)
+                    should_trigger = True
+            
+            # 在锁外触发事件
+            if should_trigger:
+                self.handle_trigger(f'keyboard_{key_name}', True)
 
     def on_keyboard_release(self, key):
         """键盘事件抬起处理"""
-        # 更新修饰键状态
         if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
-            self.ctrl_pressed = False
+            self._ctrl_pressed = False
         if key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
-            self.shift_pressed = False
+            self._shift_pressed = False
 
-        # 如果事件已暂停，不处理其他按键
         if self.events_paused:
             return
 
         key_name = key.char if hasattr(key, 'char') else None
         if key_name:
-            if self.open_log:
-                print(f'keyUp {key_name}')
-            self.pressed_keys.discard(key_name)
+            with self._keys_lock:
+                if self.open_log:
+                    print(f'keyUp {key_name}')
+                self.pressed_keys.discard(key_name)
+            # 在锁外触发事件
             self.handle_trigger(f'keyboard_{key_name}', False)
 
     def on_mouse_click(self, x, y, button, pressed):
@@ -197,6 +233,7 @@ class AutoInputManager:
 
     def start(self):
         """启动监听"""
+        self._is_running.set()
         self.keyboard_listener = keyboard.Listener(on_press=self.on_keyboard_press, on_release=self.on_keyboard_release)
         self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
         
@@ -212,9 +249,12 @@ class AutoInputManager:
     def stop(self):
         """停止监听并清理所有正在运行的操作"""
         print("正在停止所有操作...")
-        self.is_running = False
+        self._is_running.clear()
+        
         # 清理所有活动的循环
-        self.active_loops.clear()
+        with self._loops_lock:
+            self.active_loops.clear()
+            
         # 停止所有监听器
         if self.keyboard_listener:
             self.keyboard_listener.stop()
@@ -223,14 +263,14 @@ class AutoInputManager:
         
         # 确保监听器完全停止
         if self.keyboard_listener:
-            self.keyboard_listener.join()
+            self.keyboard_listener.join(2)
         if self.mouse_listener:
-            self.mouse_listener.join()
+            self.mouse_listener.join(2)
 
         # 等待所有操作线程结束
         for thread in self.active_threads:
             try:
-                thread.join()  # 平均分配超时时间
+                thread.join()
             except:
                 pass  # 忽略超时异常
         
