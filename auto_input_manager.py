@@ -18,6 +18,9 @@ class AutoInputManager:
         self.keyboard_listener = None
         self.mouse_listener = None
         
+        self._ctrl_pressed = False
+        self._shift_pressed = False
+
         self._is_running = threading.Event()
         self._events_paused = threading.Event()
         
@@ -193,8 +196,7 @@ class AutoInputManager:
                     self._events_paused.set()
                     with self._loops_lock:
                         self.active_loops.clear()
-                if self.open_log:
-                    print(f'事件响应已{"暂停" if self.events_paused else "恢复"}')
+                print(f'事件响应已{"暂停" if self.events_paused else "恢复"}')
                 return
 
         if self.events_paused:
@@ -252,6 +254,8 @@ class AutoInputManager:
         
         self.keyboard_listener.start()
         self.mouse_listener.start()
+
+        print('启动监听')
         
         try:
             while self.is_running:
