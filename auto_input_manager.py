@@ -22,6 +22,8 @@ class AutoInputManager:
         self.shift_pressed = False
         # 事件响应状态
         self.events_paused = False
+        self.active_threads = []  # 追踪所有活动的线程
+        self.thread_lock = threading.Lock()  # 线程列表的同步锁
 
     def load_config(self) -> dict:
         """加载配置文件"""
@@ -60,6 +62,18 @@ class AutoInputManager:
         for action in actions:
             self.execute_action(action)
 
+    def wrap_thread_function(self, func):
+        """包装线程函数，确保线程完成后从活动线程列表中移除"""
+        def wrapper():
+            try:
+                func()
+            finally:
+                current_thread = threading.current_thread()
+                with self.thread_lock:
+                    if current_thread in self.active_threads:
+                        self.active_threads.remove(current_thread)
+        return wrapper
+
     def handle_trigger(self, trigger_key: str, is_press: bool = True):
         """处理触发事件"""
         if trigger_key not in self.config:
@@ -73,7 +87,10 @@ class AutoInputManager:
             # 一次性触发
             def loop_actions():
                 self.execute_actions(actions)
-            threading.Thread(target=loop_actions, daemon=True).start()
+            thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
+            with self.thread_lock:
+                self.active_threads.append(thread)
+            thread.start()
             if self.open_log:
                 print(f'Trigger: {trigger_key}, Type: {trigger_type}')
         elif trigger_type == 'hold':
@@ -85,7 +102,10 @@ class AutoInputManager:
                     def loop_actions():
                         while self.active_loops.get(trigger_key, False):
                             self.execute_actions(actions)
-                    threading.Thread(target=loop_actions, daemon=True).start()
+                    thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
+                    with self.thread_lock:
+                        self.active_threads.append(thread)
+                    thread.start()
                     if self.open_log:
                         print(f'Trigger: {trigger_key}, Type: {trigger_type}')
             elif trigger_key in self.active_loops:
@@ -101,7 +121,10 @@ class AutoInputManager:
                     def loop_actions():
                         while self.active_loops.get(trigger_key, False):
                             self.execute_actions(actions)
-                    threading.Thread(target=loop_actions, daemon=True).start()
+                    thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
+                    with self.thread_lock:
+                        self.active_threads.append(thread)
+                    thread.start()
                     if self.open_log:
                         print(f'Trigger: {trigger_key}, Type: {trigger_type}')
 
@@ -197,4 +220,21 @@ class AutoInputManager:
             self.keyboard_listener.stop()
         if self.mouse_listener:
             self.mouse_listener.stop()
+        
+        # 确保监听器完全停止
+        if self.keyboard_listener:
+            self.keyboard_listener.join()
+        if self.mouse_listener:
+            self.mouse_listener.join()
+
+        # 等待所有操作线程结束
+        for thread in self.active_threads:
+            try:
+                thread.join()  # 平均分配超时时间
+            except:
+                pass  # 忽略超时异常
+        
+        # 清理线程列表
+        self.active_threads.clear()
+            
         print("所有操作已停止")
