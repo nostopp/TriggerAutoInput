@@ -3,9 +3,12 @@ import sys
 from random import random as rand
 from pynput import keyboard, mouse
 import pydirectinput
+pydirectinput.PAUSE = 0.001
 import time
 from typing import Dict, List, Union, Optional
 import threading
+
+# LAST_TIME = time.perf_counter()
 
 class AutoInputManager:
     def __init__(self, config_path: str, open_log: bool):
@@ -45,6 +48,9 @@ class AutoInputManager:
 
     def execute_action(self, action: dict):
         """执行单个动作"""
+        if self.open_log:
+            print(f'执行动作: {action.get('type')}, {action.get('action', None)}')
+
         action_type = action.get('type')
         if action_type == 'keyboard':
             key = action.get('key')
@@ -60,16 +66,23 @@ class AutoInputManager:
                 pydirectinput.click(button=key)
             elif action.get('action') == 'press':
                 pydirectinput.mouseDown(button=key)
+                # mouse.Controller().press(mouse.Button.left)
             elif action.get('action') == 'release':
                 pydirectinput.mouseUp(button=key)
+                # mouse.Controller().release(mouse.Button.left)
         elif action_type == 'delay':
             random = action.get('random', 0)
             time.sleep(action.get('duration', 0.1) + random * rand())
 
     def execute_actions(self, actions: List[dict]):
         """执行一系列动作"""
+        # global LAST_TIME
+        # print(f'大循环间隔用时: {time.perf_counter() - LAST_TIME}')
         for action in actions:
+            # LAST_TIME = time.perf_counter()
             self.execute_action(action)
+            # print(f'步骤用时: {time.perf_counter() - LAST_TIME}')
+            # LAST_TIME = time.perf_counter()
 
     def wrap_thread_function(self, func):
         """包装线程函数，确保线程完成后从活动线程列表中移除"""
@@ -105,9 +118,9 @@ class AutoInputManager:
             thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
             with self.thread_lock:
                 self.active_threads.append(thread)
-            thread.start()
             if self.open_log:
                 print(f'Trigger: {trigger_key}, Type: {trigger_type}')
+            thread.start()
         elif trigger_type == 'hold':
             if is_press:
                 should_start = False
@@ -127,14 +140,14 @@ class AutoInputManager:
                     thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
                     with self.thread_lock:
                         self.active_threads.append(thread)
-                    thread.start()
                     if self.open_log:
                         print(f'Trigger: {trigger_key}, Type: {trigger_type}')
+                    thread.start()
             else:
-                with self._loops_lock:
-                    self.active_loops.pop(trigger_key, None)
                 if self.open_log:
                     print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
+                with self._loops_lock:
+                    self.active_loops.pop(trigger_key, None)
         elif trigger_type == 'toggle':
             if is_press:
                 should_start = False
@@ -143,9 +156,9 @@ class AutoInputManager:
                         self.active_loops[trigger_key] = True
                         should_start = True
                     else:
-                        self.active_loops.pop(trigger_key)
                         if self.open_log:
                             print(f'Trigger Stop: {trigger_key}, Type: {trigger_type}')
+                        self.active_loops.pop(trigger_key)
                 
                 if should_start:
                     def loop_actions():
@@ -157,9 +170,9 @@ class AutoInputManager:
                     thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
                     with self.thread_lock:
                         self.active_threads.append(thread)
-                    thread.start()
                     if self.open_log:
                         print(f'Trigger: {trigger_key}, Type: {trigger_type}')
+                    thread.start()
 
     def on_keyboard_press(self, key):
         """键盘事件按下处理"""
