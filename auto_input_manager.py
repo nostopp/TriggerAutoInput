@@ -20,6 +20,8 @@ class AutoInputManager:
         # 追踪修饰键状态
         self.ctrl_pressed = False
         self.shift_pressed = False
+        # 事件响应状态
+        self.events_paused = False
 
     def load_config(self) -> dict:
         """加载配置文件"""
@@ -118,11 +120,19 @@ class AutoInputManager:
             self.shift_pressed = True
 
         key_name = key.char if hasattr(key, 'char') else None
+        
+        # 检查暂停/恢复快捷键
+        if key_name == 'x' or key_name == 'X' or key_name == '\x18' :
+            if self.ctrl_pressed and self.shift_pressed:
+                self.events_paused = not self.events_paused
+                if self.events_paused:
+                    self.active_loops.clear()  # 清理所有活动的循环
+                if self.open_log:
+                    print(f'事件响应已{"暂停" if self.events_paused else "恢复"}')
+                return
 
-        if key_name == '\x18' and self.ctrl_pressed and self.shift_pressed:
-            # 检查强制停止快捷键
-            print("检测到强制停止快捷键 (Shift+Ctrl+X)，正在停止所有操作...")
-            self.stop()
+        # 如果事件已暂停，不处理其他按键
+        if self.events_paused:
             return
 
         if key_name and key_name not in self.pressed_keys:
@@ -139,6 +149,10 @@ class AutoInputManager:
         if key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
             self.shift_pressed = False
 
+        # 如果事件已暂停，不处理其他按键
+        if self.events_paused:
+            return
+
         key_name = key.char if hasattr(key, 'char') else None
         if key_name:
             if self.open_log:
@@ -148,6 +162,10 @@ class AutoInputManager:
 
     def on_mouse_click(self, x, y, button, pressed):
         """鼠标点击事件处理"""
+        # 如果事件已暂停，不处理鼠标事件
+        if self.events_paused:
+            return
+
         button_name = button.name if hasattr(button, 'name') else None
         if button_name:
             if self.open_log:
@@ -179,10 +197,4 @@ class AutoInputManager:
             self.keyboard_listener.stop()
         if self.mouse_listener:
             self.mouse_listener.stop()
-        # 释放所有可能被按住的按键
-        for key in list(self.pressed_keys):
-            try:
-                pydirectinput.keyUp(key)
-            except:
-                pass
         print("所有操作已停止")
