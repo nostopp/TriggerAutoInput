@@ -3,7 +3,6 @@ import sys
 from random import random as rand
 from pynput import keyboard, mouse
 import pydirectinput
-pydirectinput.PAUSE = 0.001
 import time
 from typing import Dict, List, Union, Optional
 import threading
@@ -58,21 +57,19 @@ class AutoInputManager:
         if action_type == 'keyboard':
             key = action.get('key')
             if action.get('action') == 'press':
-                pydirectinput.keyDown(key)
+                pydirectinput.keyDown(key, _pause=False)
             elif action.get('action') == 'release':
-                pydirectinput.keyUp(key)
+                pydirectinput.keyUp(key, _pause=False)
             elif action.get('action') == 'click':
-                pydirectinput.press(key)
+                pydirectinput.press(key, _pause=False)
         elif action_type == 'mouse':
             key = action.get('key')
             if action.get('action') == 'click':
-                pydirectinput.click(button=key)
+                pydirectinput.click(button=key, _pause=False)
             elif action.get('action') == 'press':
-                pydirectinput.mouseDown(button=key)
-                # mouse.Controller().press(mouse.Button.left)
+                pydirectinput.mouseDown(button=key, _pause=False)
             elif action.get('action') == 'release':
-                pydirectinput.mouseUp(button=key)
-                # mouse.Controller().release(mouse.Button.left)
+                pydirectinput.mouseUp(button=key, _pause=False)
         elif action_type == 'delay':
             random = action.get('random', 0)
             time.sleep(action.get('duration', 0.1) + random * rand())
