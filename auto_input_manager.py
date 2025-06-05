@@ -8,6 +8,7 @@ from typing import Dict, List, Union, Optional
 import threading
 
 # LAST_TIME = time.perf_counter()
+MOUSE_BUTTON = set(['left', 'right', 'middle', 'x1', 'x2'])
 
 class AutoInputManager:
     def __init__(self, config_path: str, open_log: bool):
@@ -48,7 +49,7 @@ class AutoInputManager:
             print(f"加载配置文件失败: {e}")
             sys.exit(1)
 
-    def execute_action(self, action: dict):
+    def execute_action(self, action: dict, press_keys: Dict[str, bool]):
         """执行单个动作"""
         if self.open_log:
             print(f'执行动作: {action.get('type')}, {action.get('action', None)}')
@@ -57,9 +58,14 @@ class AutoInputManager:
         if action_type == 'keyboard':
             key = action.get('key')
             if action.get('action') == 'press':
-                pydirectinput.keyDown(key, _pause=False)
+                if key not in press_keys:
+                    pydirectinput.keyDown(key, _pause=False)
+                    press_keys[key] = True
+                elif self.open_log:
+                    print(f'按键已按下，未重复触发: {key}')
             elif action.get('action') == 'release':
                 pydirectinput.keyUp(key, _pause=False)
+                press_keys.pop(key, None)
             elif action.get('action') == 'click':
                 pydirectinput.press(key, _pause=False)
         elif action_type == 'mouse':
@@ -67,28 +73,33 @@ class AutoInputManager:
             if action.get('action') == 'click':
                 pydirectinput.click(button=key, _pause=False)
             elif action.get('action') == 'press':
-                pydirectinput.mouseDown(button=key, _pause=False)
+                if key not in press_keys:
+                    pydirectinput.mouseDown(button=key, _pause=False)
+                    press_keys[key] = True
+                elif self.open_log:
+                    print(f'按键已按下，未重复触发: {key}')
             elif action.get('action') == 'release':
                 pydirectinput.mouseUp(button=key, _pause=False)
+                press_keys.pop(key, None)
         elif action_type == 'delay':
             random = action.get('random', 0)
             time.sleep(action.get('duration', 0.1) + random * rand())
 
-    def execute_actions(self, actions: List[dict]):
+    def execute_actions(self, actions: List[dict], press_keys: Dict[str, bool]):
         """执行一系列动作"""
         # global LAST_TIME
         # print(f'大循环间隔用时: {time.perf_counter() - LAST_TIME}')
         for action in actions:
             # LAST_TIME = time.perf_counter()
-            self.execute_action(action)
+            self.execute_action(action, press_keys)
             # print(f'步骤用时: {time.perf_counter() - LAST_TIME}')
             # LAST_TIME = time.perf_counter()
 
-    def wrap_thread_function(self, func):
+    def wrap_thread_function(self, func, *args):
         """包装线程函数，确保线程完成后从活动线程列表中移除"""
         def wrapper():
             try:
-                func()
+                func(*args)
             except Exception as e:
                 if self.open_log:
                     print(f"线程执行出错: {e}")
@@ -98,6 +109,31 @@ class AutoInputManager:
                     if current_thread in self.active_threads:
                         self.active_threads.remove(current_thread)
         return wrapper
+
+    def _trigger_action(self, actions: List[dict]):
+        # 一次性触发不需要锁
+        press_keys = {}
+        self.execute_actions(actions, press_keys)
+        for key in press_keys.keys():
+            if key in MOUSE_BUTTON:
+                pydirectinput.mouseUp(button=key, _pause=False)
+            else:
+                pydirectinput.keyUp(key, _pause=False)
+
+    def _loop_trigger_actions(self, actions: List[dict], trigger_key: str):
+        press_keys = {}
+        while self.is_running:
+            # 检查循环状态时使用短暂的锁
+            with self._loops_lock:
+                if not self.active_loops.get(trigger_key, False):
+                    break
+            self.execute_actions(actions, press_keys)
+
+        for key in press_keys.keys():
+            if key in MOUSE_BUTTON:
+                pydirectinput.mouseUp(button=key, _pause=False)
+            else:
+                pydirectinput.keyUp(key, _pause=False)
 
     def handle_trigger(self, trigger_key: str, is_press: bool = True):
         """处理触发事件"""
@@ -112,10 +148,7 @@ class AutoInputManager:
         actions = trigger_config.get('actions', [])
 
         if trigger_type == 'once' and is_press:
-            # 一次性触发不需要锁
-            def loop_actions():
-                self.execute_actions(actions)
-            thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
+            thread = threading.Thread(target=self.wrap_thread_function(self._trigger_action, actions), daemon=True)
             with self.thread_lock:
                 self.active_threads.append(thread)
             if self.open_log:
@@ -130,14 +163,7 @@ class AutoInputManager:
                         should_start = True
                 
                 if should_start:
-                    def loop_actions():
-                        while self.is_running:
-                            # 检查循环状态时使用短暂的锁
-                            with self._loops_lock:
-                                if not self.active_loops.get(trigger_key, False):
-                                    break
-                            self.execute_actions(actions)
-                    thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
+                    thread = threading.Thread(target=self.wrap_thread_function(self._loop_trigger_actions, actions, trigger_key), daemon=True)
                     with self.thread_lock:
                         self.active_threads.append(thread)
                     if self.open_log:
@@ -161,13 +187,7 @@ class AutoInputManager:
                         self.active_loops.pop(trigger_key)
                 
                 if should_start:
-                    def loop_actions():
-                        while self.is_running:
-                            with self._loops_lock:
-                                if not self.active_loops.get(trigger_key, False):
-                                    break
-                            self.execute_actions(actions)
-                    thread = threading.Thread(target=self.wrap_thread_function(loop_actions), daemon=True)
+                    thread = threading.Thread(target=self.wrap_thread_function(self._loop_trigger_actions, actions, trigger_key), daemon=True)
                     with self.thread_lock:
                         self.active_threads.append(thread)
                     if self.open_log:
