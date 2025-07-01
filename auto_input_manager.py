@@ -272,7 +272,7 @@ class AutoInputManager:
         self.keyboard_listener.start()
         self.mouse_listener.start()
 
-        print('启动监听')
+        print('启动监听, 按 Ctrl+Shift+x 暂停/恢复监听')
         
         try:
             while self.is_running:
