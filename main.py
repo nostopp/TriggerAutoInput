@@ -15,13 +15,14 @@ def parse_args():
     
     parser.add_argument('config', type=str, help='配置文件，必须是有效的 JSON 文件')
     parser.add_argument('--log', action='store_true', help='启用详细日志输出')
+    parser.add_argument('-p', '--process', type=str, default=None, help='指定前台进程名，仅当该进程在前台时才响应事件')
     
     return parser.parse_args()
 
 def main():
     args = parse_args()
     config = f'config/{args.config}'
-    manager = AutoInputManager(config, args.log)
+    manager = AutoInputManager(config, args.log, process_name=args.process)
     manager.start()
 
 if __name__ == "__main__":

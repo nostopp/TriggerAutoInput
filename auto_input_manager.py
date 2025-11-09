@@ -6,15 +6,20 @@ import pydirectinput
 import time
 from typing import Dict, List, Union, Optional
 import threading
+import ctypes
+import psutil
+import os
 
 # LAST_TIME = time.perf_counter()
 MOUSE_BUTTON = set(['left', 'right', 'middle', 'x1', 'x2'])
 
 class AutoInputManager:
-    def __init__(self, config_path: str, open_log: bool):
+    def __init__(self, config_path: str, open_log: bool, process_name: Optional[str] = None):
         self.config_path = config_path
         self.config = self.load_config()
         self.open_log = open_log
+        # 如果指定了进程名，标准化存储（小写，去掉可能的 .exe 后缀）
+        self.process_name = self._normalize_process_name(process_name) if process_name else None
         self.keyboard_listener = None
         self.mouse_listener = None
         
@@ -31,6 +36,9 @@ class AutoInputManager:
 
         self.active_threads = []  # 追踪所有活动的线程
         self.thread_lock = threading.Lock()  # 线程列表的同步锁
+        # 前台进程匹配缓存与锁（由后台监视线程更新）
+        self._foreground_lock = threading.Lock()
+        self._foreground_matches = True if not self.process_name else self._is_foreground_process()
 
     @property
     def is_running(self):
@@ -48,6 +56,53 @@ class AutoInputManager:
         except Exception as e:
             print(f"加载配置文件失败: {e}")
             sys.exit(1)
+
+    def _normalize_process_name(self, name: str) -> str:
+        """标准化进程名用于比较：小写，去掉 .exe 后缀（如果有）"""
+        if not name:
+            return name
+        base = os.path.basename(name).lower()
+        if base.endswith('.exe'):
+            base = base[:-4]
+        return base
+
+    def _get_foreground_pid(self) -> Optional[int]:
+        """使用 Windows API 获取前台窗口对应的进程 id。"""
+        try:
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            pid = ctypes.c_ulong()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            return pid.value
+        except Exception:
+            return None
+
+    def _get_foreground_process_name(self) -> Optional[str]:
+        pid = self._get_foreground_pid()
+        if not pid:
+            return None
+        try:
+            proc = psutil.Process(pid)
+            return self._normalize_process_name(proc.name())
+        except Exception:
+            return None
+
+    def _is_foreground_process(self) -> bool:
+        """判断当前前台进程名是否与指定的 process_name 匹配（如果未指定 process_name 则返回 True）。"""
+        if not self.process_name:
+            return True
+        fg = self._get_foreground_process_name()
+        if not fg:
+            return False
+        return fg == self.process_name
+
+    def _is_blocked(self) -> bool:
+        """当 events 被暂停或前台进程不是指定进程时，视为被阻塞（相当于暂停）。"""
+        # 使用缓存的前台匹配结果以避免在事件回调线程中执行阻塞/慢操作
+        if not self.process_name:
+            return self.events_paused
+        with self._foreground_lock:
+            fg_ok = self._foreground_matches
+        return self.events_paused or not fg_ok
 
     def execute_action(self, action: dict, press_keys: Dict[str, bool]):
         """执行单个动作"""
@@ -120,6 +175,31 @@ class AutoInputManager:
             else:
                 pydirectinput.keyUp(key, _pause=False)
 
+    def _foreground_monitor(self, interval: float = 0.5):
+        prev = None
+        try:
+            while self.is_running:
+                matches = self._is_foreground_process()
+                with self._foreground_lock:
+                    self._foreground_matches = matches
+                if prev is None:
+                    prev = matches
+                elif matches != prev:
+                    if not matches:
+                        with self._loops_lock:
+                            if self.active_loops:
+                                self.active_loops.clear()
+                        if self.open_log:
+                            print(f'前台进程不是 {self.process_name}，已临时暂停事件并清理循环')
+                    else:
+                        if self.open_log:
+                            print(f'前台进程回到 {self.process_name}，恢复事件响应')
+                    prev = matches
+                time.sleep(interval)
+        except Exception as e:
+            if self.open_log:
+                print(f'前台监视线程出错: {e}')
+
     def _loop_trigger_actions(self, actions: List[dict], trigger_key: str):
         press_keys = {}
         while self.is_running:
@@ -140,7 +220,7 @@ class AutoInputManager:
         if trigger_key not in self.config:
             return
 
-        if self.events_paused:
+        if self._is_blocked():
             return
 
         trigger_config = self.config[trigger_key]
@@ -216,7 +296,7 @@ class AutoInputManager:
                 print(f'事件响应已{"暂停" if self.events_paused else "恢复"}')
                 return
 
-        if self.events_paused:
+        if self._is_blocked():
             return
 
         if key_name:
@@ -239,7 +319,7 @@ class AutoInputManager:
         if key == keyboard.Key.shift_l or key == keyboard.Key.shift_r:
             self._shift_pressed = False
 
-        if self.events_paused:
+        if self._is_blocked():
             return
 
         key_name = key.char if hasattr(key, 'char') else None
@@ -253,8 +333,8 @@ class AutoInputManager:
 
     def on_mouse_click(self, x, y, button, pressed):
         """鼠标点击事件处理"""
-        # 如果事件已暂停，不处理鼠标事件
-        if self.events_paused:
+        # 如果事件已暂停或前台进程不匹配，不处理鼠标事件
+        if self._is_blocked():
             return
 
         button_name = button.name if hasattr(button, 'name') else None
@@ -273,6 +353,10 @@ class AutoInputManager:
         self.mouse_listener.start()
 
         print('启动监听, 按 Ctrl+Shift+x 暂停/恢复监听')
+        # 如果用户指定了 process_name，则启动后台监视线程来缓存前台进程匹配状态
+        if self.process_name:
+            self.monitor_thread = threading.Thread(target=self._foreground_monitor, daemon=True)
+            self.monitor_thread.start()
         
         try:
             while self.is_running:

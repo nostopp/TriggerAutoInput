@@ -41,6 +41,9 @@
    ```bash
    uv run main.py config.json
    ```
+    可接受参数
+    * --log, 启用详细日志输出
+    * -p name / --process name, 指定前台进程名，仅当该进程在前台时才响应事件
 
 ## 配置文件格式
 
