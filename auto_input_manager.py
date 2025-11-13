@@ -19,7 +19,8 @@ class AutoInputManager:
         self.config = self.load_config()
         self.open_log = open_log
         # 如果指定了进程名，标准化存储（小写，去掉可能的 .exe 后缀）
-        self.process_name = self._normalize_process_name(process_name) if process_name else None
+        process = process_name if process_name else self.config.get('process', None)
+        self.process_name = self._normalize_process_name(process) if process else None
         self.keyboard_listener = None
         self.mouse_listener = None
         

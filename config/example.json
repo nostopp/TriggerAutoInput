@@ -1,4 +1,5 @@
 {
+    "process": "example-process",
     "keyboard_f": {
         "trigger_type": "once",
         "actions": [

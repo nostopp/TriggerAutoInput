@@ -22,7 +22,7 @@
    ```
 
 2. 创建配置文件（JSON格式，放在config文件夹，已有示例example.json），例如 `config.json`：
-   ```json
+   ```jsonc
    {
        "keyboard_f": {
            "trigger_type": "once",
@@ -39,7 +39,7 @@
 
 3. 运行程序：
    ```bash
-   uv run main.py config.json
+   uv run main.py config/example.json
    ```
     可接受参数
     * --log, 启用详细日志输出
@@ -52,7 +52,7 @@
 - 鼠标按键：`mouse_<button>`（例如：mouse_left, mouse_right）
 
 配置项说明：
-```json
+```jsonc
 {
     "触发键": {
         "trigger_type": "触发类型",  // once, hold, 或 toggle
@@ -66,5 +66,11 @@
             }
         ]
     }
+}
+```
+可选配置
+```jsonc
+{
+    "process": "example"  // 等同于运行时输入-process
 }
 ```
