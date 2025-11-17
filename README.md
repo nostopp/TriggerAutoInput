@@ -38,12 +38,18 @@
    ```
 
 3. 运行程序：
+- 终端运行
    ```bash
    uv run main.py config/example.json
    ```
     可接受参数
     * --log, 启用详细日志输出
     * -p name / --process name, 指定前台进程名，仅当该进程在前台时才响应事件
+
+- 图形化运行
+   ```bash
+   uv run mainWindow.py
+   ```
 
 ## 配置文件格式
 
