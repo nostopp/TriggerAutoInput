@@ -10,5 +10,10 @@ dependencies = [
     "psutil>=5.9.0",
 ]
 
+[dependency-groups]
+build = [
+    "pyinstaller>=6.14.0,<7",
+]
+
 [[tool.uv.index]]
 url = "http://mirrors.aliyun.com/pypi/simple"

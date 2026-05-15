@@ -10,6 +10,17 @@ from tkinter.scrolledtext import ScrolledText
 from auto_input_manager import AutoInputManager
 
 
+def get_app_root() -> str:
+    """Return the directory that should be treated as the app root.
+
+    When packaged by PyInstaller, resources should be resolved relative to the
+    executable. During source execution, resolve them relative to this file.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 class PrintForwarder:
     """Temporarily replace builtin print so each line is queued for the GUI and also written to the console."""
 
@@ -42,14 +53,14 @@ class MainWindow:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("TriggerAutoInput GUI")
-        self.project_root = os.path.abspath(os.getcwd())
+        self.project_root = get_app_root()
         self.log_queue: queue.Queue = queue.Queue()
         self.manager: AutoInputManager | None = None
         self.worker_thread: threading.Thread | None = None
         self.want_close = False
         self.action_text = tk.StringVar(value="启动")
         self.status_var = tk.StringVar(value="空闲")
-        self.config_var = tk.StringVar(value="config/example.json")
+        self.config_var = tk.StringVar(value=self._get_default_config_value())
         self.log_var = tk.BooleanVar(value=False)
         self.process_var = tk.StringVar(value="")
 
@@ -92,10 +103,24 @@ class MainWindow:
         info_frame.pack(fill=tk.X, pady=(10, 0))
         ttk.Label(info_frame, text="运行后请使用 Ctrl+Shift+X 暂停/恢复监听").pack(anchor=tk.W)
 
+    def _get_default_config_value(self) -> str:
+        default_config = os.path.join(self.project_root, "config", "example.json")
+        if os.path.isfile(default_config):
+            return self._to_display_path(default_config)
+        return ""
+
+    def _to_display_path(self, path: str) -> str:
+        try:
+            if os.path.commonpath([self.project_root, path]) == self.project_root:
+                return os.path.relpath(path, self.project_root)
+        except ValueError:
+            pass
+        return path
+
     def _on_browse(self):
         selected = filedialog.askopenfilename(
             title="选择配置文件",
-            initialdir=f'{self.project_root}/config',
+            initialdir=os.path.join(self.project_root, "config"),
             filetypes=[
                 ("JSON 文件", "*.json"),
                 ("所有文件", "*.*"),
@@ -103,9 +128,7 @@ class MainWindow:
         )
         if not selected:
             return
-        if os.path.commonpath([self.project_root, selected]) == self.project_root:
-            selected = os.path.relpath(selected, self.project_root)
-        self.config_var.set(selected)
+        self.config_var.set(self._to_display_path(selected))
 
     def _on_action(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -127,11 +150,7 @@ class MainWindow:
         if not abs_config.lower().endswith(".json"):
             messagebox.showwarning("无效配置", "配置文件应以 .json 结尾。")
             return
-        if os.path.commonpath([self.project_root, abs_config]) == self.project_root:
-            rel_path = os.path.relpath(abs_config, self.project_root)
-            self.config_var.set(rel_path)
-        else:
-            self.config_var.set(abs_config)
+        self.config_var.set(self._to_display_path(abs_config))
 
         manager = AutoInputManager(abs_config, self.log_var.get(), process_name=self.process_var.get() or None)
         self.manager = manager
