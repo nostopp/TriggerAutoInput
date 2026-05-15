@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - pyproject.toml
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version change
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Get-VersionFromContent([string]$content) {
+              if (-not $content) {
+                  return $null
+              }
+
+              $match = [regex]::Match($content, '(?m)^version\s*=\s*"([^"]+)"')
+              if ($match.Success) {
+                  return $match.Groups[1].Value
+              }
+
+              return $null
+          }
+
+          $currentContent = Get-Content pyproject.toml -Raw
+          $currentVersion = Get-VersionFromContent $currentContent
+          if (-not $currentVersion) {
+              throw "Unable to read current version from pyproject.toml"
+          }
+
+          $previousVersion = $null
+          $releaseNeeded = $false
+
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+              $releaseNeeded = $true
+          }
+          else {
+              $before = '${{ github.event.before }}'
+              if ($before -and $before -ne '0000000000000000000000000000000000000000') {
+                  $previousContent = git show "${before}:pyproject.toml" 2>$null
+                  if ($LASTEXITCODE -eq 0) {
+                      $previousVersion = Get-VersionFromContent ($previousContent -join "`n")
+                  }
+              }
+
+              if ($currentVersion -ne $previousVersion) {
+                  $releaseNeeded = $true
+              }
+          }
+
+          "current_version=$currentVersion" >> $env:GITHUB_OUTPUT
+          "previous_version=$previousVersion" >> $env:GITHUB_OUTPUT
+          "tag_name=v$currentVersion" >> $env:GITHUB_OUTPUT
+          "release_needed=$($releaseNeeded.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Stop when version is unchanged
+        if: steps.version.outputs.release_needed != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "pyproject.toml changed, but version remained ${{ steps.version.outputs.current_version }}. Skipping release."
+
+      - name: Set up Python
+        if: steps.version.outputs.release_needed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        if: steps.version.outputs.release_needed == 'true'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install build dependencies
+        if: steps.version.outputs.release_needed == 'true'
+        run: uv sync --no-dev --group build
+
+      - name: Build release package
+        if: steps.version.outputs.release_needed == 'true'
+        shell: pwsh
+        run: ./scripts/build_release.ps1
+
+      - name: Upload release artifact
+        if: steps.version.outputs.release_needed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.version.outputs.current_version }}
+          path: dist/release/*.zip
+
+      - name: Publish GitHub release
+        if: steps.version.outputs.release_needed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: ${{ steps.version.outputs.tag_name }}
+          generate_release_notes: true
+          files: dist/release/*.zip
