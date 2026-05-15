@@ -5,16 +5,17 @@
         "actions": [
             {
                 "type": "keyboard",
-                "action": "click",
+                "action": "press",
                 "key": "1"
             },
             {
                 "type": "delay",
-                "duration": 0.1
+                "duration": 0.1,
+                "random": 0.5
             },
             {
                 "type": "keyboard",
-                "action": "click",
+                "action": "press",
                 "key": "2"
             }
         ]
