@@ -1,16 +1,23 @@
 import builtins
+import json
 import os
 import queue
 import threading
 import sys
 import ctypes
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import psutil
+from pynput import keyboard, mouse
 
 from auto_input_manager import AutoInputManager
+
+
+RECORD_OUTPUT_PATH = os.path.join("config", "recorded.json")
+CLICK_MERGE_THRESHOLD_SECONDS = 0.1
 
 
 def get_app_root() -> str:
@@ -52,6 +59,254 @@ class PrintForwarder:
         return None
 
 
+class InputRecorder:
+    def __init__(self, root: tk.Tk, log_callback, status_callback, finish_callback, output_path: str):
+        self.root = root
+        self.log_callback = log_callback
+        self.status_callback = status_callback
+        self.finish_callback = finish_callback
+        self.output_path = output_path
+        self.keyboard_listener: keyboard.Listener | None = None
+        self.mouse_listener: mouse.Listener | None = None
+        self.recording = False
+        self.awaiting_trigger = False
+        self.trigger_key: str | None = None
+        self._pending_trigger: tuple[str, str] | None = None
+        self._pending_actions: dict[tuple[str, str], tuple[dict, float]] = {}
+        self._events: list[dict] = []
+        self._last_action_time: float | None = None
+        self._ctrl_pressed = False
+        self._shift_pressed = False
+
+    def start(self) -> bool:
+        if self.recording:
+            return False
+
+        self.recording = True
+        self.awaiting_trigger = True
+        self.trigger_key = None
+        self._pending_trigger = None
+        self._pending_actions = {}
+        self._events = []
+        self._last_action_time = None
+        self._ctrl_pressed = False
+        self._shift_pressed = False
+
+        self.keyboard_listener = keyboard.Listener(
+            on_press=self._on_keyboard_press,
+            on_release=self._on_keyboard_release,
+        )
+        self.mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
+        self.keyboard_listener.start()
+        self.mouse_listener.start()
+
+        self._set_status("等待触发键...")
+        self._log("开始录制：请按一个键盘单键或鼠标键作为触发键")
+        return True
+
+    def stop(self) -> dict | None:
+        if not self.recording:
+            return None
+
+        self.recording = False
+        self.awaiting_trigger = False
+        self._stop_listeners()
+
+        if not self.trigger_key:
+            self._set_status("录制已取消")
+            self._log("录制结束，但未捕获到触发键")
+            return None
+
+        if self._pending_actions:
+            self._log(f"录制结束时仍有未闭合按键，已忽略 {len(self._pending_actions)} 个未闭合事件")
+            ignored_events = {id(event_info[0]) for event_info in self._pending_actions.values()}
+            self._events = [event for event in self._events if id(event) not in ignored_events]
+            self._pending_actions = {}
+
+        actions = self._build_actions()
+        payload = {
+            self.trigger_key: {
+                "trigger_type": "once",
+                "actions": actions,
+            }
+        }
+        return payload
+
+    def _stop_listeners(self):
+        if self.keyboard_listener:
+            self.keyboard_listener.stop()
+            self.keyboard_listener = None
+        if self.mouse_listener:
+            self.mouse_listener.stop()
+            self.mouse_listener = None
+
+    def _set_status(self, text: str):
+        self.root.after(0, lambda: self.status_callback(text))
+
+    def _log(self, text: str):
+        self.root.after(0, lambda: self.log_callback(text))
+
+    def _normalize_keyboard_key(self, key) -> str | None:
+        char = getattr(key, "char", None)
+        if char:
+            return char.lower()
+        return None
+
+    def _event_time(self) -> float:
+        return time.perf_counter()
+
+    def _append_delay_before(self, event_time: float):
+        if self._last_action_time is None:
+            self._last_action_time = event_time
+            return
+        delay = event_time - self._last_action_time
+        if delay > 0:
+            self._events.append({"kind": "delay", "duration": delay})
+        self._last_action_time = event_time
+
+    def _record_action(self, event: dict, event_time: float):
+        self._append_delay_before(event_time)
+        self._events.append(event)
+
+    def _capture_trigger(self, trigger_key: str):
+        self.trigger_key = trigger_key
+        self.awaiting_trigger = False
+        self._pending_trigger = None
+        self._pending_actions = {}
+        self._events = []
+        self._last_action_time = None
+        self._set_status("正在录制动作...")
+        self._log(f"触发键已确认：{trigger_key}")
+        self._log("开始录制动作，按 Ctrl+Shift+C 结束")
+
+    def _on_keyboard_press(self, key):
+        normalized = self._normalize_keyboard_key(key)
+
+        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            self._ctrl_pressed = True
+            return
+        if key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
+            self._shift_pressed = True
+            return
+        if normalized in ("c", "\x03"):
+            if self._ctrl_pressed and self._shift_pressed:
+                self.root.after(0, self.finish_callback)
+                return
+
+        if not self.recording:
+            return
+
+        if self.awaiting_trigger:
+            if normalized:
+                self._pending_trigger = ("keyboard", normalized)
+            return
+
+        if not normalized:
+            return
+
+        event_time = self._event_time()
+        pending_key = ("keyboard", normalized)
+        if pending_key not in self._pending_actions:
+            event = {"kind": "event", "time": event_time, "type": "keyboard", "action": "press", "key": normalized}
+            self._pending_actions[pending_key] = (event, event_time)
+            self._record_action(event, event_time)
+
+    def _on_keyboard_release(self, key):
+        normalized = self._normalize_keyboard_key(key)
+
+        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            self._ctrl_pressed = False
+            return
+        if key in (keyboard.Key.shift_l, keyboard.Key.shift_r):
+            self._shift_pressed = False
+            return
+
+        if not self.recording:
+            return
+
+        if self.awaiting_trigger:
+            if self._pending_trigger == ("keyboard", normalized):
+                self._capture_trigger(f"keyboard_{normalized}")
+            return
+
+        if not normalized:
+            return
+
+        event_time = self._event_time()
+        self._pending_actions.pop(("keyboard", normalized), None)
+        event = {"kind": "event", "time": event_time, "type": "keyboard", "action": "release", "key": normalized}
+        self._record_action(event, event_time)
+
+    def _on_mouse_click(self, x, y, button, pressed):
+        if not self.recording:
+            return
+
+        button_name = getattr(button, "name", None)
+        if not button_name:
+            return
+
+        if self.awaiting_trigger:
+            if pressed:
+                self._pending_trigger = ("mouse", button_name)
+            elif self._pending_trigger == ("mouse", button_name):
+                self._capture_trigger(f"mouse_{button_name}")
+            return
+
+        event_time = self._event_time()
+        action = "press" if pressed else "release"
+        pending_key = ("mouse", button_name)
+        if pressed:
+            if pending_key in self._pending_actions:
+                return
+            event = {"kind": "event", "time": event_time, "type": "mouse", "action": action, "key": button_name}
+            self._pending_actions[pending_key] = (event, event_time)
+        else:
+            self._pending_actions.pop(pending_key, None)
+            event = {"kind": "event", "time": event_time, "type": "mouse", "action": action, "key": button_name}
+        self._record_action(event, event_time)
+
+    def _build_actions(self) -> list[dict]:
+        result: list[dict] = []
+        idx = 0
+        while idx < len(self._events):
+            event = self._events[idx]
+            if event["kind"] == "delay":
+                duration = round(event["duration"], 3)
+                if duration > 0:
+                    result.append({"type": "delay", "duration": duration})
+                idx += 1
+                continue
+
+            next_event = None
+            next_idx = -1
+            interstitial_delay = None
+            if idx + 2 < len(self._events) and self._events[idx + 1]["kind"] == "delay" and self._events[idx + 2]["kind"] == "event":
+                interstitial_delay = self._events[idx + 1]
+                next_event = self._events[idx + 2]
+                next_idx = idx + 2
+            elif idx + 1 < len(self._events) and self._events[idx + 1]["kind"] == "event":
+                next_event = self._events[idx + 1]
+                next_idx = idx + 1
+
+            if (
+                next_event
+                and event["type"] == next_event["type"]
+                and event["key"] == next_event["key"]
+                and event["action"] == "press"
+                and next_event["action"] == "release"
+            ):
+                gap_seconds = interstitial_delay["duration"] if interstitial_delay else (next_event["time"] - event["time"])
+                if gap_seconds < CLICK_MERGE_THRESHOLD_SECONDS:
+                    result.append({"type": event["type"], "action": "click", "key": event["key"]})
+                    idx = next_idx + 1
+                    continue
+
+            result.append({"type": event["type"], "action": event["action"], "key": event["key"]})
+            idx += 1
+
+        return result
+
+
 class MainWindow:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -67,6 +322,13 @@ class MainWindow:
         self.config_var = tk.StringVar(value=self._get_default_config_value())
         self.log_var = tk.BooleanVar(value=False)
         self.process_var = tk.StringVar(value="")
+        self.recorder = InputRecorder(
+            root=self.root,
+            log_callback=self._queue_log,
+            status_callback=self.status_var.set,
+            finish_callback=self._finish_recording,
+            output_path=os.path.join(self.project_root, RECORD_OUTPUT_PATH),
+        )
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -94,6 +356,15 @@ class MainWindow:
         self.process_entry.grid(row=2, column=1, sticky=tk.EW, padx=(4, 0), pady=(8, 0))
         self.print_process_button = ttk.Button(param_frame, text="打印进程", command=self._on_print_processes)
         self.print_process_button.grid(row=2, column=2, sticky=tk.W, padx=(4, 0), pady=(8, 0))
+
+        record_frame = ttk.Frame(padding_frame, padding=(0, 10, 0, 0))
+        record_frame.pack(fill=tk.X)
+        self.record_button = ttk.Button(record_frame, text="开始录制", command=self._toggle_recording)
+        self.record_button.pack(side=tk.LEFT)
+        ttk.Label(
+            record_frame,
+            text=f"录制输出固定覆盖到 {RECORD_OUTPUT_PATH}，结束快捷键 Ctrl+Shift+C",
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         button_frame = ttk.Frame(padding_frame, padding=(0, 10, 0, 0))
         button_frame.pack(fill=tk.X)
@@ -147,6 +418,45 @@ class MainWindow:
         if not message.endswith("\n"):
             message += "\n"
         self.log_queue.put(message)
+
+    def _toggle_recording(self):
+        if self.recorder.recording:
+            self._finish_recording()
+            return
+
+        if self.worker_thread and self.worker_thread.is_alive():
+            messagebox.showwarning("无法录制", "请先停止当前运行中的监听，再开始录制。")
+            return
+
+        started = self.recorder.start()
+        if not started:
+            return
+        self.record_button.configure(text="停止录制")
+
+    def _finish_recording(self):
+        payload = self.recorder.stop()
+        self.record_button.configure(text="开始录制")
+        if payload is None:
+            return
+
+        process_name = self.process_var.get()
+        if process_name:
+            payload["process"] = process_name
+
+        output_path = self.recorder.output_path
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        try:
+            with open(output_path, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=4)
+            self.config_var.set(self._to_display_path(output_path))
+            self.status_var.set("录制完成")
+            trigger_key = next(iter(payload))
+            action_count = len(payload[trigger_key]["actions"])
+            self._queue_log(f"录制完成：触发键 {trigger_key}，共生成 {action_count} 个动作")
+            self._queue_log(f"配置已覆盖写入：{output_path}")
+        except Exception as exc:
+            self.status_var.set("录制保存失败")
+            self._queue_log(f"保存录制配置失败: {exc}")
 
     def _on_print_processes(self):
         if self.process_dump_thread and self.process_dump_thread.is_alive():
@@ -299,6 +609,8 @@ class MainWindow:
         self.root.after(100, self._poll_logs)
 
     def _on_close(self):
+        if self.recorder.recording:
+            self.recorder.stop()
         if self.manager:
             self.want_close = True
             self._stop_manager()
