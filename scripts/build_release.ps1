@@ -45,6 +45,7 @@ try {
         --noconfirm `
         --clean `
         --onedir `
+        --uac-admin `
         --name $appName `
         --windowed `
         --hidden-import _sha2 `
